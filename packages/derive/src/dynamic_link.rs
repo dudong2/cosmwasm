@@ -1,4 +1,4 @@
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Span, TokenStream}; 
 use quote::{format_ident, quote};
 use syn::{
     parse_quote, AttributeArgs, Ident, ItemTrait, Lit, Meta, NestedMeta, ReturnType, Signature,
@@ -14,6 +14,11 @@ macro_rules! abort_by_dynamic_link {
     };
 }
 
+// ex)
+// #[dynamic_link(CalleeContract, user_defined_mock = true)]
+// 
+// 위와 같은 attributes를 파싱
+// (CalleeContract, true)와 같은 형식으로 만들어 리턴
 pub fn parse_attributes(attr_args: AttributeArgs) -> (Ident, bool) {
     let mut struct_id: Option<Ident> = None;
     let mut does_use_mock: Option<bool> = None;
@@ -57,6 +62,66 @@ pub fn parse_attributes(attr_args: AttributeArgs) -> (Ident, bool) {
     (res_id, res_mock)
 }
 
+// trait_def는 trait의 struct정의문 전체를 의미
+// ex)
+// #[dynamic_link(NumberContract)]
+// trait Number: Contract {
+//     fn add(&self, by: i32);
+//     fn number(&self) -> i32;
+// }
+//
+// 1. trait_def가 cosmwasm_std::Contract를 상속하는지 검사
+// 2. trait이 가진 method를 signatures(vec<&Signature>)에 push -> method말고 다른게 있으면 abort
+// 3. contract_struct_id는 dynamic link로 호출될 대상 contract의 이름(NumberContract) -> dynamiclinked_NumberContract
+// 4. extern block 생성
+// 5. implements block 생성
+// 6. 새로운 trait_def에 validate_interface method를 추가 
+// 7. TokenStream을 생성해서 반환
+//
+// -> new trait
+// trait Number: Contract {
+//     fn add(&self, by: i32);
+//     fn number(&self) -> i32;
+//     fn validate_interface(&self, deps: cosmwasm_std::Deps) -> cosmwasm_std::StdResult<()>;
+// }
+// 
+// -> extern block
+// mod __wasm_imported_dynamiclinked_NumberContract {
+//     #[link(wasm_import_module = "dynamiclinked_NumberContract")]
+//     extern "C" {
+//         pub(crate) fn add(addr: u32, ptr0: u32);
+//         pub(crate) fn number(addr: u32) -> i32;
+//     }
+// }
+//
+// -> implements block
+// impl Number for dynamiclinked_NumberContract {
+//     fn add(&self, arg0: i32) {
+//         let vec_addr = cosmwasm_std::to_vec(&self.get_address()).unwrap();
+//         let vec_arg0 = cosmwasm_std::to_vec(&arg0).unwrap();
+//         let region_addr = cosmwasm_std::memory::release_buffer(vec_addr) as u32;
+//         let region_arg0 = cosmwasm_std::memory::release_buffer(vec_arg0) as u32;
+//         unsafe {
+//             __wasm_imported_dynamiclinked_NumberContract::add(region_addr, region_arg0);
+//         }
+//     }
+//
+//     fn number(&self) -> i32 {
+//         let vec_addr = cosmwasm_std::to_vec(&self.get_address()).unwrap();
+//         let region_addr = cosmwasm_std::memory::release_buffer(vec_addr) as u32;
+//         unsafe {
+//             let result = __wasm_imported_dynamiclinked_NumberContract::number(region_addr);
+//             let vec_result = cosmwasm_std::memory::comsume_region(result as *mut cosmwasm_std::memory::Region);
+//             cosmwasm_std::from_slice(&vec_result).unwrap()
+//         }
+//     }
+//
+//     fn validate_interface(&self, deps: cosmwasm_std::Deps) -> cosmwasm_std::StdResult<()> {
+//         let address = self.get_address();
+//         deps.api.validate_dynamic_link_interface(&address, b"[{"name":"add","inputs":[{"type":"i32"}],"outputs":[{"type":"i32"}]},{"name":"sub","inputs":[{"type":"i32"}],"outputs":[{"type":"i32"}]},{"name":"mul","inputs":[{"type":"i32"}],"outputs":[{"type":"i32"}]},{"name":"number","inputs":[],"outputs":[{"type":"i32"}]}]")?;
+//         Ok(())
+//     } 
+// }
 pub fn generate_import_contract_declaration(
     contract_struct_id: &Ident,
     trait_def: &ItemTrait,
@@ -116,10 +181,26 @@ pub fn generate_import_contract_declaration(
     }
 }
 
+// ex)
+// #[dynamic_link(NumberContract)]
+// trait Number: Contract {
+//     fn add(&self, by: i32);
+//     fn number(&self) -> i32;
+// }
+// 
+// dynamic_link의 대상이 되는 contract의 이름(NumberContract)앞에 __wasm_imported_를 붙여 반환 -> __wasm_imported_NumberContract
 fn generate_imported_module_id(module_name: &str) -> Ident {
     format_ident!("__wasm_imported_{}", module_name.to_ascii_lowercase())
 }
 
+// ex)
+// #[dynamic_link(NumberContract)]
+// trait Number: Contract {
+//     fn add(&self, by: i32);
+//     fn number(&self) -> i32;
+// }
+// 
+// trait이 cosmwasm_std::Contract를 상속하는지 검사
 fn has_supertrait_contract(trait_def: &ItemTrait) -> bool {
     trait_def.supertraits.iter().any(|sb| match sb {
         TypeParamBound::Trait(tb) => tb.path.segments.last().unwrap().ident == "Contract",
@@ -127,6 +208,20 @@ fn has_supertrait_contract(trait_def: &ItemTrait) -> bool {
     })
 }
 
+// ex)
+// #[dynamic_link(NumberContract)]
+// trait Number: Contract {
+//     fn add(&self, by: i32);
+//     fn number(&self) -> i32;
+// }
+// 
+// mod __wasm_imported_dynamiclinked_NumberContract {
+//     #[link(wasm_import_module = "dynamiclinked_NumberContract")]
+//     extern "C" {
+//         pub(crate) fn add(addr: u32, ptr0: u32);
+//         pub(crate) fn number(addr: u32) -> i32;
+//     }
+// }
 fn generate_extern_block(module_name: &str, methods: &[&Signature]) -> TokenStream {
     let module_name_ident = generate_imported_module_id(module_name);
     let funcs = methods.iter().map(|signature| {
@@ -154,6 +249,19 @@ fn generate_extern_block(module_name: &str, methods: &[&Signature]) -> TokenStre
     }
 }
 
+// ex)
+// #[dynamic_link(NumberContract)]
+// trait Number: Contract {
+//     fn add(&self, by: i32);
+//     fn number(&self) -> i32;
+// }
+// 
+// fn validate_interface(&self, deps: cosmwasm_std::Deps) -> cosmwasm_std::StdResult<()> {
+//     let address = self.get_address();
+//     deps.api.validate_dynamic_link_interface(&address, b"[{"name":"add","inputs":[{"type":"i32"}],"outputs":[{"type":"i32"}]},{"name":"number","inputs":[],"outputs":[{"type":"i32"}]}]")?;
+//     Ok(())
+// }
+// validate_interface method를 생성
 fn generate_validate_interface_method(methods: &[&Signature]) -> TokenStream {
     let interface: Vec<ExportType<FunctionType>> = methods
         .iter()
@@ -181,6 +289,40 @@ fn generate_validate_interface_method(methods: &[&Signature]) -> TokenStream {
     }
 }
 
+// ex)
+// #[dynamic_link(NumberContract)]
+// trait Number: Contract {
+//     fn add(&self, by: i32);
+//     fn number(&self) -> i32;
+// }
+//
+// impl Number for dynamiclinked_NumberContract {
+//     fn add(&self, arg0: i32) {
+//         let vec_addr = cosmwasm_std::to_vec(&self.get_address()).unwrap();
+//         let vec_arg0 = cosmwasm_std::to_vec(&arg0).unwrap();
+//         let region_addr = cosmwasm_std::memory::release_buffer(vec_addr) as u32;
+//         let region_arg0 = cosmwasm_std::memory::release_buffer(vec_arg0) as u32;
+//         unsafe {
+//             __wasm_imported_dynamiclinked_NumberContract::add(region_addr, region_arg0);
+//         }
+//     }
+//
+//     fn number(&self) -> i32 {
+//         let vec_addr = cosmwasm_std::to_vec(&self.get_address()).unwrap();
+//         let region_addr = cosmwasm_std::memory::release_buffer(vec_addr) as u32;
+//         unsafe {
+//             let result = __wasm_imported_dynamiclinked_NumberContract::number(region_addr);
+//             let vec_result = cosmwasm_std::memory::comsume_region(result as *mut cosmwasm_std::memory::Region);
+//             cosmwasm_std::from_slice(&vec_result).unwrap()
+//         }
+//     }
+//
+//     fn validate_interface(&self, deps: cosmwasm_std::Deps) -> cosmwasm_std::StdResult<()> {
+//         let address = self.get_address();
+//         deps.api.validate_dynamic_link_interface(&address, b"[{"name":"add","inputs":[{"type":"i32"}],"outputs":[{"type":"i32"}]},{"name":"sub","inputs":[{"type":"i32"}],"outputs":[{"type":"i32"}]},{"name":"mul","inputs":[{"type":"i32"}],"outputs":[{"type":"i32"}]},{"name":"number","inputs":[],"outputs":[{"type":"i32"}]}]")?;
+//         Ok(())
+//     } 
+// }
 fn generate_implements(
     module_name: &str,
     trait_id: &Ident,
@@ -199,6 +341,29 @@ fn generate_implements(
     }
 }
 
+// ex)
+// generate_serialization_func(dynamiclinked_NumberContract, fn add(&self, by: i32))
+// generate_serialization_func(dynamiclinked_NumberContract, fn number(&self) -> i32)
+//
+// fn add(&self, arg0: i32) {
+//     let vec_addr = cosmwasm_std::to_vec(&self.get_address()).unwrap();
+//     let vec_arg0 = cosmwasm_std::to_vec(&arg0).unwrap();
+//     let region_addr = cosmwasm_std::memory::release_buffer(vec_addr) as u32;
+//     let region_arg0 = cosmwasm_std::memory::release_buffer(vec_arg0) as u32;
+//     unsafe {
+//         __wasm_imported_dynamiclinked_NumberContract::add(region_addr, region_arg0);
+//     }
+// }
+//
+// fn number(&self) -> i32 {
+//     let vec_addr = cosmwasm_std::to_vec(&self.get_address()).unwrap();
+//     let region_addr = cosmwasm_std::memory::release_buffer(vec_addr) as u32;
+//     unsafe {
+//         let result = __wasm_imported_dynamiclinked_NumberContract::number(region_addr);
+//         let vec_result = cosmwasm_std::memory::comsume_region(result as *mut cosmwasm_std::memory::Region);
+//         cosmwasm_std::from_slice(&vec_result).unwrap()
+//     }
+// }
 //Defines a function that was originally imported to execute serialization and call to imported functions.
 fn generate_serialization_func(module_name: &str, signature: &Signature) -> TokenStream {
     let func_name = &signature.ident;

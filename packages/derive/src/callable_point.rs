@@ -1,8 +1,36 @@
-use proc_macro2::TokenStream;
+use proc_macro2::TokenStream; 
 use quote::{format_ident, quote};
 
 use crate::utils::{abort_by, collect_available_arg_types, has_return_value, make_typed_return};
 
+// ex)
+// #[callable_point]
+// fn add(deps: DepsMut, _env: Env, by: i32) {
+//     handle_add(deps, by).unwrap();
+// }
+//
+// #[cfg(target_arch = "wasm32")]
+// mod __wasm_export_add {
+//     use super::*;
+// 
+//    #[no_mangle]
+//    extern "C" fn add(ptr0: u32, ptr1: u32) {
+//        let vec_arg0: Vec<u8> = unsafe { cosmwasm_std::memory::consume_region(ptr0 as *mut cosmwasm_std::memory::Region) };
+//        let vec_arg1: Vec<u8> = unsafe { cosmwasm_std::memory::consume_region(ptr1 as *mut cosmwasm_std::memory::Region) };
+//        let arg0: Env = cosmwasm_std::from_slice(&vec_arg0).unwrap();
+//        let arg1: i32 = cosmwasm_std::from_slice(&vec_arg1).unwrap();
+// 
+//        let mut deps = cosmwasm_std::make_dependencies();
+// 
+//        super::add(deps.as_mut(), arg0, arg1)
+//    }
+// }
+// 
+// #[allow(dead_code)]
+// fn add(deps: DepsMut, _env: Env, by: i32) {
+//     handle_add(deps, by).unwrap();
+// }
+//
 /// Function attributed with this macro must take `deps` typed `Deps` or `DepsMut`
 /// as the first argument and `env` typed `Env` as the second argument.
 pub fn make_callable_point(function: syn::ItemFn) -> (TokenStream, (String, bool)) {
