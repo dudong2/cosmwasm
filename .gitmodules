@@ -1,0 +1,6 @@
+[submodule "dependencies/finschia-sdk"]
+	path = dependencies/finschia-sdk
+	url = https://github.com/Finschia/finschia-sdk
+[submodule "dependencies/wasmd"]
+	path = dependencies/wasmd
+	url = https://github.com/Finschia/wasmd
