@@ -4,3 +4,6 @@
 [submodule "dependencies/wasmd"]
 	path = dependencies/wasmd
 	url = https://github.com/Finschia/wasmd
+[submodule "dependencies/finschia"]
+	path = dependencies/finschia
+	url = https://github.com/Finschia/finschia
